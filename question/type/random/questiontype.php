@@ -189,11 +189,10 @@ class qtype_random extends question_type {
      *
      * @param int $categoryid the id of a question category.
      * @param bool whether to include questions from subcategories.
-     * @param string $questionsinuse comma-separated list of question ids to
-     *      exclude from consideration.
+     * @param null|array $questionsquiz array of question ids by user for current quiz.
      * @return array of question records.
      */
-    public function get_available_questions_from_category($categoryid, $subcategories) {
+    public function get_available_questions_from_category($categoryid, $subcategories, $questionsquiz = null) {
         if (isset($this->availablequestionsbycategory[$categoryid][$subcategories])) {
             return $this->availablequestionsbycategory[$categoryid][$subcategories];
         }
@@ -205,8 +204,37 @@ class qtype_random extends question_type {
             $categoryids = array($categoryid);
         }
 
-        $questionids = question_bank::get_finder()->get_questions_from_categories(
+        if ($questionsquiz) {
+            // Get questions with the number of attempts.
+            global $DB;
+            list($qcsql, $qcparams) = $DB->get_in_or_equal($categoryids, SQL_PARAMS_NAMED, 'qc');
+            list($qaidssql, $qaidsparams) = $DB->get_in_or_equal($questionsquiz, SQL_PARAMS_NAMED, 'daids');
+            $questionidsattempts = $DB->get_records_sql("SELECT q.id , COUNT(qa.questionid) AS numprevioususes
+											FROM {question} q
+											LEFT JOIN {question_attempts} qa
+											ON qa.id {$qaidssql}
+											AND q.id = qa.questionid
+											WHERE q.category {$qcsql}
+											AND q.parent = 0
+											AND q.hidden = 0
+											AND qtype NOT IN ({$this->excludedqtypes})
+											GROUP BY q.id ORDER BY numprevioususes ASC", $qaidsparams + $qcparams);
+            // To mix objects with id of question and number of attempts.
+            shuffle($questionidsattempts);
+            // Sorting an objects descendingly number of attempts.
+            usort($questionidsattempts, function ($first, $second) {
+                return $first->numprevioususes > $second->numprevioususes;
+            });
+            // Get id of questions.
+            $questionids = array();
+            foreach ($questionidsattempts as $questionidsattempt) {
+                $questionids[] = $questionidsattempt->id;
+            }
+        } else {
+            $questionids = question_bank::get_finder()->get_questions_from_categories(
                 $categoryids, 'qtype NOT IN (' . $this->excludedqtypes . ')');
+            shuffle($questionids);
+        }
         $this->availablequestionsbycategory[$categoryid][$subcategories] = $questionids;
         return $questionids;
     }
@@ -219,16 +247,17 @@ class qtype_random extends question_type {
      * Load the definition of another question picked randomly by this question.
      * @param object       $questiondata the data defining a random question.
      * @param array        $excludedquestions of question ids. We will no pick any question whose id is in this list.
+     * @param null|array   $questionsquiz array of question ids by user for current quiz.
      * @param bool         $allowshuffle      if false, then any shuffle option on the selected quetsion is disabled.
      * @param null|integer $forcequestionid   if not null then force the picking of question with id $forcequestionid.
      * @throws coding_exception
      * @return question_definition|null the definition of the question that was
      *      selected, or null if no suitable question could be found.
      */
-    public function choose_other_question($questiondata, $excludedquestions, $allowshuffle = true, $forcequestionid = null) {
+    public function choose_other_question($questiondata, $excludedquestions, $questionsquiz = null,
+        $allowshuffle = true, $forcequestionid = null) {
         $available = $this->get_available_questions_from_category($questiondata->category,
-                !empty($questiondata->questiontext));
-        shuffle($available);
+                !empty($questiondata->questiontext), $questionsquiz);
 
         if ($forcequestionid !== null) {
             $forcedquestionkey = array_search($forcequestionid, $available);
